@@ -61,7 +61,14 @@ app.post("/api/save-svg", async (req, res) => {
       }
 
       svg = await fs.readFile(resolvedPath, "utf8");
-      svg = applyVisibilityToSvg(svg, visibleIds);
+      const svgIdMap = buildSvgIdMapFromSvg(svg);
+      const expandedVisibleIds = visibleIds.flatMap((id) => {
+        const normalized = String(id || "").trim();
+        if (!normalized) return [];
+        if (svgIdMap.has(normalized)) return svgIdMap.get(normalized);
+        return [normalized];
+      });
+      svg = applyVisibilityToSvg(svg, expandedVisibleIds);
     } else {
       return res.status(400).json({ error: "Missing SVG payload." });
     }
@@ -201,15 +208,78 @@ function parseVisible(value) {
 function applyVisibilityToSvg(svg, visibleIds) {
   const $ = load(svg, { xmlMode: true });
   const visibleSet = new Set((visibleIds || []).map((id) => String(id)));
+
+  function parseStyle(style) {
+    const raw = String(style || "").trim();
+    if (!raw) return new Map();
+    const entries = raw
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const index = part.indexOf(":");
+        if (index === -1) return null;
+        const key = part.slice(0, index).trim().toLowerCase();
+        const value = part.slice(index + 1).trim();
+        if (!key) return null;
+        return [key, value];
+      })
+      .filter(Boolean);
+
+    return new Map(entries);
+  }
+
+  function serializeStyle(styleMap) {
+    if (!styleMap || styleMap.size === 0) return "";
+    return Array.from(styleMap.entries())
+      .map(([key, value]) => `${key}:${value}`)
+      .join(";");
+  }
+
+  function removeClassToken(classValue, token) {
+    const raw = String(classValue || "").trim();
+    if (!raw) return "";
+    const tokens = raw
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .filter((value) => value !== token);
+    return tokens.join(" ");
+  }
+
   $("*[id]").each((_, element) => {
     const id = String($(element).attr("id") || "");
     if (!isIdLike(id)) {
       return;
     }
-    if (visibleSet.has(id)) {
+
+    const isVisible = visibleSet.has(id);
+
+    // Inline styles (e.g. style="display:none") override presentation attributes.
+    // To make exports match the "visible IDs" logic, explicitly rewrite both.
+    const styleMap = parseStyle($(element).attr("style"));
+    if (isVisible) {
+      styleMap.delete("display");
+      styleMap.delete("visibility");
       $(element).attr("display", "inline");
+      $(element).attr("visibility", "visible");
+
+      const nextClass = removeClassToken($(element).attr("class"), "hide");
+      if (nextClass) {
+        $(element).attr("class", nextClass);
+      } else {
+        $(element).removeAttr("class");
+      }
     } else {
+      styleMap.set("display", "none");
       $(element).attr("display", "none");
+    }
+
+    const serialized = serializeStyle(styleMap);
+    if (serialized) {
+      $(element).attr("style", serialized);
+    } else {
+      $(element).removeAttr("style");
     }
   });
   return $.xml();
@@ -227,13 +297,37 @@ async function getSvgIdMap() {
   }
 
   const svg = await fs.readFile(resolvedPath, "utf8");
+  return buildSvgIdMapFromSvg(svg);
+
+  for (const [key, list] of map.entries()) {
+    list.sort((a, b) => {
+      const aParts = a.split(".").map(Number);
+      const bParts = b.split(".").map(Number);
+      const len = Math.max(aParts.length, bParts.length);
+      for (let i = 0; i < len; i += 1) {
+        const av = aParts[i] || 0;
+        const bv = bParts[i] || 0;
+        if (av !== bv) return av - bv;
+      }
+      return 0;
+    });
+  }
+
+  return map;
+}
+
+function buildSvgIdMapFromSvg(svg) {
   const $ = load(svg, { xmlMode: true });
   const map = new Map();
 
-  $("g[id]").each((_, element) => {
+  // IDs like 1.1 may live on <rect>, <text>, etc. Not only <g>.
+  $("*[id]").each((_, element) => {
     const id = String($(element).attr("id") || "");
     if (!isIdLike(id)) return;
+
     const [base] = id.split(".");
+    if (!base) return;
+
     if (!map.has(base)) {
       map.set(base, []);
     }

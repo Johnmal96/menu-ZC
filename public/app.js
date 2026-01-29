@@ -44,7 +44,8 @@ async function refreshVisibility() {
     const raw = data.rawVisibleIds || [];
     currentVisibleIds = expanded.length ? expanded : raw;
     applyVisibility(currentVisibleIds);
-    statusElement.textContent = `Visible IDs: ${currentVisibleIds.join(", ") || "none"}`;
+    const displayIds = raw.length ? raw : currentVisibleIds;
+    statusElement.textContent = `Visible IDs: ${displayIds.join(", ") || "none"}`;
   } catch (error) {
     console.error(error);
     statusElement.textContent = "Failed to load visibility.";
