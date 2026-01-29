@@ -1,0 +1,277 @@
+import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
+import { promises as fs } from "fs";
+import dotenv from "dotenv";
+import { google } from "googleapis";
+import { load } from "cheerio";
+import { Resvg } from "@resvg/resvg-js";
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const port = process.env.PORT || 3000;
+const saveFolder = process.env.SAVED_SVG_FOLDER || path.join(__dirname, "saved-svg");
+
+app.use(express.static(path.join(__dirname, "public")));
+app.use(express.json({ limit: "5mb" }));
+
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get("/api/visibility", async (req, res) => {
+  try {
+    const { visibleIds, rawVisibleIds } = await fetchVisibleIdsFromSheet();
+    res.json({ visibleIds, rawVisibleIds });
+  } catch (error) {
+    console.error("Failed to load visibility from sheet:", error);
+    res.status(500).json({ error: "Failed to load visibility." });
+  }
+});
+
+app.post("/api/save-svg", async (req, res) => {
+  try {
+    const svgPayload = req.body?.svg;
+    const svgUrl = String(req.body?.svgUrl || "").trim();
+    const visibleIds = Array.isArray(req.body?.visibleIds) ? req.body.visibleIds : [];
+
+    let svg = "";
+
+    if (svgPayload) {
+      svg = String(svgPayload);
+      if (!svg.trim().startsWith("<svg")) {
+        return res.status(400).json({ error: "Invalid SVG payload." });
+      }
+    } else if (svgUrl) {
+      if (!svgUrl.startsWith("/assets/") || !svgUrl.toLowerCase().endsWith(".svg")) {
+        return res.status(400).json({ error: "Invalid SVG URL." });
+      }
+
+      const publicPath = path.join(__dirname, "public");
+      const relativePath = svgUrl.replace(/^\/+/, "");
+      const resolvedPath = path.join(publicPath, relativePath);
+      const assetsPath = path.join(publicPath, "assets");
+
+      if (!resolvedPath.startsWith(assetsPath)) {
+        return res.status(400).json({ error: "Invalid SVG URL." });
+      }
+
+      svg = await fs.readFile(resolvedPath, "utf8");
+      svg = applyVisibilityToSvg(svg, visibleIds);
+    } else {
+      return res.status(400).json({ error: "Missing SVG payload." });
+    }
+
+    await fs.mkdir(saveFolder, { recursive: true });
+    const fileName = `svg-${Date.now()}.png`;
+    const filePath = path.join(saveFolder, fileName);
+    const resvg = new Resvg(svg, {
+      background: "transparent",
+    });
+    const pngBuffer = resvg.render().asPng();
+    await fs.writeFile(filePath, pngBuffer);
+
+    res.json({ ok: true, fileName });
+  } catch (error) {
+    console.error("Failed to save SVG:", error);
+    res.status(500).json({ error: "Failed to save SVG." });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Server listening on http://localhost:${port}`);
+});
+
+async function fetchVisibleIdsFromSheet() {
+  const sheetId = process.env.GOOGLE_SHEETS_ID;
+  const sheetName = process.env.GOOGLE_SHEETS_SHEET_NAME;
+  const rawRange = process.env.GOOGLE_SHEETS_RANGE || "A3:B";
+  const apiKey = process.env.GOOGLE_API_KEY;
+
+  if (!sheetId || !apiKey) {
+    throw new Error("Missing GOOGLE_SHEETS_ID or GOOGLE_API_KEY.");
+  }
+
+  const sheets = google.sheets({ version: "v4" });
+
+  let range = rawRange;
+  if (!rawRange.includes("!")) {
+    let targetSheetName = String(sheetName || "").trim();
+    const metadata = await sheets.spreadsheets.get({
+      spreadsheetId: sheetId,
+      key: apiKey,
+      fields: "sheets.properties.title",
+    });
+    const sheetTitles = (metadata.data.sheets || [])
+      .map((sheet) => sheet.properties?.title)
+      .filter(Boolean);
+
+    if (!targetSheetName || !sheetTitles.includes(targetSheetName)) {
+      targetSheetName = sheetTitles[0] || "";
+    }
+
+    if (!targetSheetName) {
+      throw new Error("No sheet tabs found for the spreadsheet.");
+    }
+
+    range = `${formatSheetName(targetSheetName)}!${rawRange}`;
+  }
+
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range,
+    key: apiKey,
+  });
+
+  const rows = response.data.values || [];
+
+  const svgIdMap = await getSvgIdMap();
+
+  const entries = rows
+    .map((row, index) => {
+      const valueA = String(row[0] || "").trim();
+      const valueB = String(row[1] || "").trim();
+
+      const idFromA = normalizeId(valueA);
+      const idFromB = normalizeId(valueB);
+      const isBooleanA = isBooleanLike(valueA);
+      const isBooleanB = isBooleanLike(valueB);
+      const isIdA = isIdLike(idFromA);
+      const isIdB = isIdLike(idFromB);
+
+      let id = idFromA;
+      let visibleValue = valueB;
+
+      if (isIdB && (isBooleanA || !isIdA)) {
+        id = idFromB;
+        visibleValue = valueA;
+      }
+
+      const visible = parseVisible(visibleValue);
+      const rowNumber = index + 1;
+      const idsForRow = expandRowToSvgIds(id, rowNumber, svgIdMap);
+      return { id, ids: idsForRow, visible };
+    })
+    .filter((row) => row.visible);
+
+  const rawVisibleIds = entries
+    .map((row) => row.id)
+    .filter((id) => String(id || "").trim());
+
+  const visibleIds = entries
+    .filter((row) => row.ids.length)
+    .flatMap((row) => row.ids);
+
+  return { visibleIds, rawVisibleIds };
+}
+
+function formatSheetName(name) {
+  const trimmed = String(name || "").trim();
+  const escaped = trimmed.replace(/'/g, "''");
+  const needsQuotes = /[^A-Za-z0-9_]/.test(escaped);
+  return needsQuotes ? `'${escaped}'` : escaped;
+}
+
+function normalizeId(value) {
+  return String(value || "").trim().replace(/^#/, "");
+}
+
+function isBooleanLike(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "true" || normalized === "false" || normalized === "1" || normalized === "0" || normalized === "yes" || normalized === "no";
+}
+
+function isIdLike(value) {
+  const normalized = String(value || "").trim();
+  return /^[0-9]+(\.[0-9]+)*$/.test(normalized);
+}
+
+function parseVisible(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "") {
+    return true;
+  }
+  return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
+function applyVisibilityToSvg(svg, visibleIds) {
+  const $ = load(svg, { xmlMode: true });
+  const visibleSet = new Set((visibleIds || []).map((id) => String(id)));
+  $("*[id]").each((_, element) => {
+    const id = String($(element).attr("id") || "");
+    if (!isIdLike(id)) {
+      return;
+    }
+    if (visibleSet.has(id)) {
+      $(element).attr("display", "inline");
+    } else {
+      $(element).attr("display", "none");
+    }
+  });
+  return $.xml();
+}
+
+async function getSvgIdMap() {
+  const svgUrl = process.env.SVG_SOURCE_URL || "/assets/menu1.svg";
+  const publicPath = path.join(__dirname, "public");
+  const relativePath = svgUrl.replace(/^\/+/, "");
+  const resolvedPath = path.join(publicPath, relativePath);
+  const assetsPath = path.join(publicPath, "assets");
+
+  if (!resolvedPath.startsWith(assetsPath)) {
+    throw new Error("SVG_SOURCE_URL must point to a file under /public/assets.");
+  }
+
+  const svg = await fs.readFile(resolvedPath, "utf8");
+  const $ = load(svg, { xmlMode: true });
+  const map = new Map();
+
+  $("g[id]").each((_, element) => {
+    const id = String($(element).attr("id") || "");
+    if (!isIdLike(id)) return;
+    const [base] = id.split(".");
+    if (!map.has(base)) {
+      map.set(base, []);
+    }
+    map.get(base).push(id);
+  });
+
+  for (const [key, list] of map.entries()) {
+    list.sort((a, b) => {
+      const aParts = a.split(".").map(Number);
+      const bParts = b.split(".").map(Number);
+      const len = Math.max(aParts.length, bParts.length);
+      for (let i = 0; i < len; i += 1) {
+        const av = aParts[i] || 0;
+        const bv = bParts[i] || 0;
+        if (av !== bv) return av - bv;
+      }
+      return 0;
+    });
+  }
+
+  return map;
+}
+
+function expandRowToSvgIds(rawId, rowNumber, svgIdMap) {
+  const normalized = String(rawId || "").trim();
+  const rowKey = String(rowNumber);
+
+  if (normalized && svgIdMap.has(normalized)) {
+    return svgIdMap.get(normalized);
+  }
+
+  if (svgIdMap.has(rowKey)) {
+    return svgIdMap.get(rowKey);
+  }
+
+  if (normalized && isIdLike(normalized)) {
+    return [normalized];
+  }
+
+  return [];
+}

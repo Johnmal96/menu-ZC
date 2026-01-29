@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SVG Visibility Toggle</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page__header">
+        <h1>SVG Visibility Toggle</h1>
+        <p>Visibility is driven by Google Sheets.</p>
+      </header>
+
+      <section class="controls">
+        <button id="refresh-button" type="button">Refresh visibility</button>
+        <button id="save-button" type="button">Save Image</button>
+        <span id="status" class="status">Idle</span>
+      </section>
+
+      <section id="svg-container" class="svg-container" aria-live="polite"></section>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
