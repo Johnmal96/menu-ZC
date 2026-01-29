@@ -6,6 +6,7 @@ const SVG_URL = "/assets/menu1.svg";
 
 let svgRoot = null;
 let currentVisibleIds = [];
+let currentPrices = {};
 
 async function loadSvg() {
   statusElement.textContent = "Loading SVG...";
@@ -31,6 +32,17 @@ function applyVisibility(visibleIds) {
   });
 }
 
+function applyPrices(prices) {
+  if (!svgRoot) return;
+  const map = prices && typeof prices === "object" ? prices : {};
+
+  Object.entries(map).forEach(([id, value]) => {
+    const element = svgRoot.querySelector(`#${CSS.escape(id)}`);
+    if (!element) return;
+    element.textContent = String(value ?? "");
+  });
+}
+
 function isTargetId(value) {
   return /^[0-9]+(\.[0-9]+)*$/.test(String(value || "").trim());
 }
@@ -42,8 +54,11 @@ async function refreshVisibility() {
     const data = await response.json();
     const expanded = data.visibleIds || [];
     const raw = data.rawVisibleIds || [];
+    const prices = data.prices || {};
     currentVisibleIds = expanded.length ? expanded : raw;
+    currentPrices = prices;
     applyVisibility(currentVisibleIds);
+    applyPrices(currentPrices);
     const displayIds = raw.length ? raw : currentVisibleIds;
     statusElement.textContent = `Visible IDs: ${displayIds.join(", ") || "none"}`;
   } catch (error) {

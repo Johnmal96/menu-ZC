@@ -25,8 +25,8 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/visibility", async (req, res) => {
   try {
-    const { visibleIds, rawVisibleIds } = await fetchVisibleIdsFromSheet();
-    res.json({ visibleIds, rawVisibleIds });
+    const [{ visibleIds, rawVisibleIds }, prices] = await Promise.all([fetchVisibleIdsFromSheet(), fetchPricesFromSheet()]);
+    res.json({ visibleIds, rawVisibleIds, prices });
   } catch (error) {
     console.error("Failed to load visibility from sheet:", error);
     res.status(500).json({ error: "Failed to load visibility." });
@@ -61,6 +61,7 @@ app.post("/api/save-svg", async (req, res) => {
       }
 
       svg = await fs.readFile(resolvedPath, "utf8");
+
       const svgIdMap = buildSvgIdMapFromSvg(svg);
       const expandedVisibleIds = visibleIds.flatMap((id) => {
         const normalized = String(id || "").trim();
@@ -68,7 +69,10 @@ app.post("/api/save-svg", async (req, res) => {
         if (svgIdMap.has(normalized)) return svgIdMap.get(normalized);
         return [normalized];
       });
+
+      const prices = await fetchPricesFromSheet();
       svg = applyVisibilityToSvg(svg, expandedVisibleIds);
+      svg = applyPricesToSvg(svg, prices);
     } else {
       return res.status(400).json({ error: "Missing SVG payload." });
     }
@@ -174,6 +178,61 @@ async function fetchVisibleIdsFromSheet() {
     .flatMap((row) => row.ids);
 
   return { visibleIds, rawVisibleIds };
+}
+
+async function fetchPricesFromSheet() {
+  const sheetId = process.env.GOOGLE_SHEETS_ID;
+  const sheetName = process.env.GOOGLE_SHEETS_SHEET_NAME;
+  const rawRange = process.env.GOOGLE_SHEETS_PRICE_RANGE || "C3:C";
+  const apiKey = process.env.GOOGLE_API_KEY;
+
+  if (!sheetId || !apiKey) {
+    throw new Error("Missing GOOGLE_SHEETS_ID or GOOGLE_API_KEY.");
+  }
+
+  const sheets = google.sheets({ version: "v4" });
+
+  let range = rawRange;
+  if (!rawRange.includes("!")) {
+    let targetSheetName = String(sheetName || "").trim();
+    const metadata = await sheets.spreadsheets.get({
+      spreadsheetId: sheetId,
+      key: apiKey,
+      fields: "sheets.properties.title",
+    });
+    const sheetTitles = (metadata.data.sheets || [])
+      .map((sheet) => sheet.properties?.title)
+      .filter(Boolean);
+
+    if (!targetSheetName || !sheetTitles.includes(targetSheetName)) {
+      targetSheetName = sheetTitles[0] || "";
+    }
+
+    if (!targetSheetName) {
+      throw new Error("No sheet tabs found for the spreadsheet.");
+    }
+
+    range = `${formatSheetName(targetSheetName)}!${rawRange}`;
+  }
+
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range,
+    key: apiKey,
+  });
+
+  const rows = response.data.values || [];
+  const prices = {};
+
+  // rawRange starts at row 3 by default. Map row 3 => price1, row 4 => price2, ...
+  rows.forEach((row, index) => {
+    const value = String(row?.[0] ?? "").trim();
+    const priceIndex = index + 1;
+    const key = `price${priceIndex}`;
+    prices[key] = value;
+  });
+
+  return prices;
 }
 
 function formatSheetName(name) {
@@ -283,6 +342,27 @@ function applyVisibilityToSvg(svg, visibleIds) {
     }
   });
   return $.xml();
+}
+
+function applyPricesToSvg(svg, prices) {
+  const $ = load(svg, { xmlMode: true });
+  const entries = Object.entries(prices || {});
+
+  for (const [id, value] of entries) {
+    const selector = `#${cssEscapeId(id)}`;
+    const element = $(selector);
+    if (!element || element.length === 0) continue;
+
+    // In Inkscape, <text> usually contains <tspan>. Setting .text() updates all text children.
+    element.text(String(value ?? ""));
+  }
+
+  return $.xml();
+}
+
+function cssEscapeId(id) {
+  // Minimal escaping for CSS id selectors (sufficient for ids like price1, price2, ...)
+  return String(id).replace(/[^a-zA-Z0-9_-]/g, (match) => `\\${match}`);
 }
 
 async function getSvgIdMap() {
