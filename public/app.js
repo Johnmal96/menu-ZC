@@ -26,6 +26,14 @@ let currentVisibleIds = [];
 let currentRawVisibleIds = [];
 let currentPrices = {};
 
+const isIOS =
+  /iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+  // iPadOS reports as MacIntel but has touch points
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+const usePngPreview = isIOS;
+let previewImg = null;
+
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   const contentType = String(response.headers.get("content-type") || "");
@@ -49,6 +57,15 @@ async function fetchJson(url, options) {
 }
 
 async function loadSvg() {
+  if (usePngPreview) {
+    statusElement.textContent = "Using iOS safe preview...";
+    svgContainer.innerHTML = '<img id="png-preview" alt="Menu preview" style="max-width:100%; height:auto;" />';
+    previewImg = document.getElementById("png-preview");
+    svgRoot = null;
+    statusElement.textContent = "Preview ready";
+    return;
+  }
+
   statusElement.textContent = "Loading SVG...";
   const response = await fetch(currentSvgUrl);
   if (!response.ok) {
@@ -63,7 +80,20 @@ async function loadSvg() {
   }
   svgContainer.innerHTML = svgText;
   svgRoot = svgContainer.querySelector("svg");
+  previewImg = null;
   statusElement.textContent = "SVG loaded";
+}
+
+function updatePreviewPng() {
+  if (!usePngPreview) return;
+  if (!previewImg) return;
+
+  const ids = (currentRawVisibleIds || []).map((id) => String(id || "").trim()).filter(Boolean);
+  const url = new URL("/api/preview-png", window.location.origin);
+  url.searchParams.set("svgUrl", currentSvgUrl);
+  url.searchParams.set("visibleIds", ids.join(","));
+  url.searchParams.set("t", String(Date.now()));
+  previewImg.src = url.toString();
 }
 
 function applyVisibility(visibleIds) {
@@ -112,6 +142,7 @@ async function refreshVisibility() {
     currentPrices = prices;
     applyVisibility(currentRawVisibleIds);
     applyPrices(currentPrices);
+    updatePreviewPng();
     statusElement.textContent = `Visible IDs: ${currentRawVisibleIds.join(", ") || "none"}`;
   } catch (error) {
     console.error(error);
@@ -137,7 +168,7 @@ menuSelect?.addEventListener("change", async (event) => {
   await refreshVisibility();
 });
 saveButton.addEventListener("click", async () => {
-  if (!svgRoot) return;
+  if (!svgRoot && !usePngPreview) return;
 
   try {
     statusElement.textContent = "Preparing download...";
@@ -150,13 +181,21 @@ saveButton.addEventListener("click", async () => {
     });
 
     if (!response.ok) {
-      let message = "Failed to save SVG.";
-      try {
-        const text = await response.text();
-        message = JSON.parse(text)?.error || message;
-      } catch {
-        // ignore
+      const contentType = String(response.headers.get("content-type") || "");
+      const text = await response.text();
+
+      let message = `Failed to save SVG (HTTP ${response.status}).`;
+      if (text) {
+        try {
+          const json = JSON.parse(text);
+          message = String(json?.error || message);
+        } catch {
+          const snippet = text.replace(/\s+/g, " ").slice(0, 200);
+          message = `Failed to save SVG (HTTP ${response.status}). Expected JSON but got ${contentType || "unknown"}. ` +
+            `Response starts with: ${snippet}`;
+        }
       }
+
       throw new Error(message);
     }
 

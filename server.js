@@ -36,6 +36,41 @@ app.get("/api/visibility", async (req, res) => {
   }
 });
 
+app.get("/api/preview-png", async (req, res) => {
+  try {
+    const svgUrl = String(req.query?.svgUrl || defaultSvgUrl).trim();
+    const visibleIdsRaw = String(req.query?.visibleIds || "").trim();
+    const visibleIds = visibleIdsRaw
+      ? visibleIdsRaw
+          .split(",")
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+      : [];
+
+    let svg = await readSvgFromAssets(svgUrl);
+    const prices = await fetchPricesFromSheet();
+    svg = applyVisibilityAndPricesToSvg(svg, visibleIds, prices);
+
+    const resvg = new Resvg(svg, { background: "transparent" });
+    const pngBuffer = resvg.render().asPng();
+
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Content-Disposition", 'inline; filename="preview.png"');
+    res.setHeader("Cache-Control", "no-store");
+    return res.send(pngBuffer);
+  } catch (error) {
+    console.error("Failed to render preview:", error);
+    const message = String(error?.message || "Failed to render preview.");
+    if (message.includes("SVG_TOO_LARGE")) {
+      return res.status(413).json({ error: message });
+    }
+    if (shouldExposeErrorMessage(message)) {
+      return res.status(500).json({ error: message });
+    }
+    res.status(500).json({ error: "Failed to render preview." });
+  }
+});
+
 app.post("/api/save-svg", async (req, res) => {
   try {
     const wantsDownload = String(req.query?.download || "").trim() === "1";
@@ -87,6 +122,9 @@ app.post("/api/save-svg", async (req, res) => {
     if (message.includes("SVG_TOO_LARGE")) {
       return res.status(413).json({ error: message });
     }
+    if (shouldExposeErrorMessage(message)) {
+      return res.status(500).json({ error: message });
+    }
     res.status(500).json({ error: "Failed to save SVG." });
   }
 });
@@ -99,6 +137,16 @@ app.use("/api", (req, res) => {
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });
+
+function shouldExposeErrorMessage(message) {
+  const text = String(message || "");
+  return (
+    text.includes("SVG_") ||
+    text.includes("Invalid SVG URL") ||
+    text.includes("Missing GOOGLE_") ||
+    text.includes("No sheet tabs")
+  );
+}
 
 async function readSvgFromAssets(svgUrl) {
   const normalizedUrl = String(svgUrl || "").trim();
