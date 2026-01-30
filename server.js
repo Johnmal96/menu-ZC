@@ -318,6 +318,14 @@ function applyVisibilityToSvg(svg, visibleIds) {
   const $ = load(svg, { xmlMode: true });
   const visibleSet = new Set((visibleIds || []).map((id) => String(id)));
 
+  function isVisibleId(id) {
+    const normalized = String(id || "").trim();
+    if (!normalized) return false;
+    if (visibleSet.has(normalized)) return true;
+    const [base] = normalized.split(".");
+    return Boolean(base && visibleSet.has(base));
+  }
+
   function parseStyle(style) {
     const raw = String(style || "").trim();
     if (!raw) return new Map();
@@ -362,7 +370,7 @@ function applyVisibilityToSvg(svg, visibleIds) {
       return;
     }
 
-    const isVisible = visibleSet.has(id);
+    const isVisible = isVisibleId(id);
 
     // Inline styles (e.g. style="display:none") override presentation attributes.
     // To make exports match the "visible IDs" logic, explicitly rewrite both.
@@ -391,6 +399,102 @@ function applyVisibilityToSvg(svg, visibleIds) {
       $(element).removeAttr("style");
     }
   });
+  return $.xml();
+}
+
+function applyVisibilityAndPricesToSvg(svg, visibleIds, prices) {
+  const $ = load(svg, { xmlMode: true });
+  const visibleSet = new Set((visibleIds || []).map((id) => String(id)));
+
+  function isVisibleId(id) {
+    const normalized = String(id || "").trim();
+    if (!normalized) return false;
+    if (visibleSet.has(normalized)) return true;
+    const [base] = normalized.split(".");
+    return Boolean(base && visibleSet.has(base));
+  }
+
+  function parseStyle(style) {
+    const raw = String(style || "").trim();
+    if (!raw) return new Map();
+    const entries = raw
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const index = part.indexOf(":");
+        if (index === -1) return null;
+        const key = part.slice(0, index).trim().toLowerCase();
+        const value = part.slice(index + 1).trim();
+        if (!key) return null;
+        return [key, value];
+      })
+      .filter(Boolean);
+
+    return new Map(entries);
+  }
+
+  function serializeStyle(styleMap) {
+    if (!styleMap || styleMap.size === 0) return "";
+    return Array.from(styleMap.entries())
+      .map(([key, value]) => `${key}:${value}`)
+      .join(";");
+  }
+
+  function removeClassToken(classValue, token) {
+    const raw = String(classValue || "").trim();
+    if (!raw) return "";
+    const tokens = raw
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .filter((value) => value !== token);
+    return tokens.join(" ");
+  }
+
+  // 1) Apply visibility
+  $("*[id]").each((_, element) => {
+    const id = String($(element).attr("id") || "");
+    if (!isIdLike(id)) {
+      return;
+    }
+
+    const isVisible = isVisibleId(id);
+
+    const styleMap = parseStyle($(element).attr("style"));
+    if (isVisible) {
+      styleMap.delete("display");
+      styleMap.delete("visibility");
+      $(element).attr("display", "inline");
+      $(element).attr("visibility", "visible");
+
+      const nextClass = removeClassToken($(element).attr("class"), "hide");
+      if (nextClass) {
+        $(element).attr("class", nextClass);
+      } else {
+        $(element).removeAttr("class");
+      }
+    } else {
+      styleMap.set("display", "none");
+      $(element).attr("display", "none");
+    }
+
+    const serialized = serializeStyle(styleMap);
+    if (serialized) {
+      $(element).attr("style", serialized);
+    } else {
+      $(element).removeAttr("style");
+    }
+  });
+
+  // 2) Apply prices
+  for (const [id, value] of Object.entries(prices || {})) {
+    const selector = `#${cssEscapeId(id)}`;
+    const element = $(selector);
+    if (!element || element.length === 0) continue;
+    element.text(String(value ?? ""));
+  }
+
   return $.xml();
 }
 
@@ -453,6 +557,13 @@ function buildSvgIdMapFromSvg(svg) {
 function expandRowToSvgIds(rawId, rowNumber, svgIdMap) {
   const normalized = String(rawId || "").trim();
   const rowKey = String(rowNumber);
+
+  if (!svgIdMap || typeof svgIdMap.has !== "function") {
+    if (normalized && isIdLike(normalized)) {
+      return [normalized];
+    }
+    return [];
+  }
 
   if (normalized && svgIdMap.has(normalized)) {
     return svgIdMap.get(normalized);

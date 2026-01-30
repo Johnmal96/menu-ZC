@@ -23,6 +23,7 @@ let currentSvgUrl = toSvgUrl(currentMenuFile);
 
 let svgRoot = null;
 let currentVisibleIds = [];
+let currentRawVisibleIds = [];
 let currentPrices = {};
 
 async function fetchJson(url, options) {
@@ -68,14 +69,16 @@ async function loadSvg() {
 function applyVisibility(visibleIds) {
   if (!svgRoot) return;
 
-  const visibleSet = new Set(visibleIds);
+  const visibleSet = new Set((visibleIds || []).map((id) => String(id || "").trim()).filter(Boolean));
   const elements = svgRoot.querySelectorAll("[id]");
 
   elements.forEach((element) => {
     if (!isTargetId(element.id)) {
       return;
     }
-    const isVisible = visibleSet.has(element.id);
+    const id = String(element.id || "");
+    const base = id.split(".")[0];
+    const isVisible = visibleSet.has(id) || (base && visibleSet.has(base));
     element.style.display = isVisible ? "inline" : "none";
   });
 }
@@ -102,15 +105,14 @@ async function refreshVisibility() {
     if (!response.ok) {
       throw new Error(data?.error || "Failed to load visibility.");
     }
-    const expanded = data.visibleIds || [];
     const raw = data.rawVisibleIds || [];
     const prices = data.prices || {};
-    currentVisibleIds = expanded.length ? expanded : raw;
+    currentRawVisibleIds = raw;
+    currentVisibleIds = raw;
     currentPrices = prices;
-    applyVisibility(currentVisibleIds);
+    applyVisibility(currentRawVisibleIds);
     applyPrices(currentPrices);
-    const displayIds = raw.length ? raw : currentVisibleIds;
-    statusElement.textContent = `Visible IDs: ${displayIds.join(", ") || "none"}`;
+    statusElement.textContent = `Visible IDs: ${currentRawVisibleIds.join(", ") || "none"}`;
   } catch (error) {
     console.error(error);
     statusElement.textContent = String(error?.message || "Failed to load visibility.");
@@ -144,7 +146,7 @@ saveButton.addEventListener("click", async () => {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ svgUrl: currentSvgUrl, visibleIds: currentVisibleIds }),
+      body: JSON.stringify({ svgUrl: currentSvgUrl, visibleIds: currentRawVisibleIds }),
     });
 
     if (!response.ok) {
