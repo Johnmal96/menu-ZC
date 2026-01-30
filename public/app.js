@@ -25,9 +25,34 @@ let svgRoot = null;
 let currentVisibleIds = [];
 let currentPrices = {};
 
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  const contentType = String(response.headers.get("content-type") || "");
+  const text = await response.text();
+
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      const snippet = text.replace(/\s+/g, " ").slice(0, 200);
+      throw new Error(
+        `Expected JSON but got ${contentType || "unknown content-type"} (HTTP ${response.status}). ` +
+          `This usually means the backend isn't being used (opened as a file / GitHub Pages) or the API route is missing. ` +
+          `Response starts with: ${snippet}`,
+      );
+    }
+  }
+
+  return { response, data };
+}
+
 async function loadSvg() {
   statusElement.textContent = "Loading SVG...";
   const response = await fetch(currentSvgUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to load ${currentSvgUrl} (HTTP ${response.status}).`);
+  }
   const svgText = await response.text();
   svgContainer.innerHTML = svgText;
   svgRoot = svgContainer.querySelector("svg");
@@ -67,8 +92,7 @@ function isTargetId(value) {
 async function refreshVisibility() {
   try {
     statusElement.textContent = "Fetching visibility...";
-    const response = await fetch(`/api/visibility?svgUrl=${encodeURIComponent(currentSvgUrl)}`);
-    const data = await response.json();
+    const { response, data } = await fetchJson(`/api/visibility?svgUrl=${encodeURIComponent(currentSvgUrl)}`);
     if (!response.ok) {
       throw new Error(data?.error || "Failed to load visibility.");
     }
@@ -120,8 +144,8 @@ saveButton.addEventListener("click", async () => {
     if (!response.ok) {
       let message = "Failed to save SVG.";
       try {
-        const data = await response.json();
-        message = data?.error || message;
+        const text = await response.text();
+        message = JSON.parse(text)?.error || message;
       } catch {
         // ignore
       }
