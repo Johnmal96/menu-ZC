@@ -101,6 +101,11 @@ app.post("/api/save-svg", async (req, res) => {
   }
 });
 
+// Ensure API callers always get JSON (prevents HTML 404 pages that break response.json()).
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: "Not found." });
+});
+
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });
@@ -131,7 +136,14 @@ async function readSvgFromAssets(svgUrl) {
     );
   }
 
-  return fs.readFile(resolvedPath, "utf8");
+  const contents = await fs.readFile(resolvedPath, "utf8");
+  if (contents.startsWith("version https://git-lfs.github.com/spec/v1")) {
+    throw new Error(
+      `SVG_LFS_POINTER: ${path.basename(resolvedPath)} is a Git LFS pointer file on the server. ` +
+        "Your host (e.g. Render) likely didn't pull Git LFS objects. Configure the build to run `git lfs install` and `git lfs pull`.",
+    );
+  }
+  return contents;
 }
 
 async function fetchVisibleIdsFromSheet(svgIdMap) {

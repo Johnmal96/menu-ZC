@@ -54,6 +54,12 @@ async function loadSvg() {
     throw new Error(`Failed to load ${currentSvgUrl} (HTTP ${response.status}).`);
   }
   const svgText = await response.text();
+  if (svgText.startsWith("version https://git-lfs.github.com/spec/v1")) {
+    throw new Error(
+      "This server is serving a Git LFS pointer instead of the real SVG. " +
+        "If deployed to Render, add `git lfs install` + `git lfs pull` to the build command.",
+    );
+  }
   svgContainer.innerHTML = svgText;
   svgRoot = svgContainer.querySelector("svg");
   statusElement.textContent = "SVG loaded";
