@@ -69,6 +69,9 @@ async function refreshVisibility() {
     statusElement.textContent = "Fetching visibility...";
     const response = await fetch(`/api/visibility?svgUrl=${encodeURIComponent(currentSvgUrl)}`);
     const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || "Failed to load visibility.");
+    }
     const expanded = data.visibleIds || [];
     const raw = data.rawVisibleIds || [];
     const prices = data.prices || {};
@@ -80,7 +83,7 @@ async function refreshVisibility() {
     statusElement.textContent = `Visible IDs: ${displayIds.join(", ") || "none"}`;
   } catch (error) {
     console.error(error);
-    statusElement.textContent = "Failed to load visibility.";
+    statusElement.textContent = String(error?.message || "Failed to load visibility.");
   }
 }
 
@@ -141,7 +144,7 @@ saveButton.addEventListener("click", async () => {
     statusElement.textContent = `Downloaded: ${fileName}`;
   } catch (error) {
     console.error(error);
-    statusElement.textContent = "Failed to download PNG.";
+    statusElement.textContent = String(error?.message || "Failed to download PNG.");
   }
 });
 

@@ -34,6 +34,10 @@ app.get("/api/visibility", async (req, res) => {
     res.json({ visibleIds, rawVisibleIds, prices });
   } catch (error) {
     console.error("Failed to load visibility from sheet:", error);
+    const message = String(error?.message || "Failed to load visibility.");
+    if (message.includes("SVG_TOO_LARGE")) {
+      return res.status(413).json({ error: message });
+    }
     res.status(500).json({ error: "Failed to load visibility." });
   }
 });
@@ -89,6 +93,10 @@ app.post("/api/save-svg", async (req, res) => {
     res.json({ ok: true, fileName });
   } catch (error) {
     console.error("Failed to save SVG:", error);
+    const message = String(error?.message || "Failed to save SVG.");
+    if (message.includes("SVG_TOO_LARGE")) {
+      return res.status(413).json({ error: message });
+    }
     res.status(500).json({ error: "Failed to save SVG." });
   }
 });
@@ -110,6 +118,17 @@ async function readSvgFromAssets(svgUrl) {
 
   if (!resolvedPath.startsWith(assetsPath)) {
     throw new Error("Invalid SVG URL.");
+  }
+
+  // Large SVGs (especially with embedded base64 images) can exceed V8's maximum string length
+  // and crash the process with an OOM. Guard and give a clear error instead.
+  const { size } = await fs.stat(resolvedPath);
+  const sizeMb = Math.round(size / 1024 / 1024);
+  if (sizeMb >= 270) {
+    throw new Error(
+      `SVG_TOO_LARGE: ${path.basename(resolvedPath)} is ${sizeMb}MB. ` +
+        "Optimize the SVG (remove embedded images/base64, use linked images, or export optimized SVG) so it is smaller before loading/saving.",
+    );
   }
 
   return fs.readFile(resolvedPath, "utf8");
