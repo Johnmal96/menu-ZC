@@ -21,6 +21,13 @@ function toSvgUrl(menuFile) {
 let currentMenuFile = normalizeMenuFile(new URLSearchParams(window.location.search).get("svg"));
 let currentSvgUrl = toSvgUrl(currentMenuFile);
 
+function getRenderSvgUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const renderSvg = String(params.get("renderSvg") || "").trim();
+  if (!renderSvg) return "";
+  return toSvgUrl(renderSvg);
+}
+
 let svgRoot = null;
 let currentVisibleIds = [];
 let currentRawVisibleIds = [];
@@ -124,6 +131,10 @@ async function updatePreviewPng() {
   const ids = (currentRawVisibleIds || []).map((id) => String(id || "").trim()).filter(Boolean);
   const url = new URL("/api/preview-png", window.location.origin);
   url.searchParams.set("svgUrl", currentSvgUrl);
+  const renderSvgUrl = getRenderSvgUrl();
+  if (renderSvgUrl) {
+    url.searchParams.set("renderSvgUrl", renderSvgUrl);
+  }
   url.searchParams.set("visibleIds", ids.join(","));
   url.searchParams.set("t", String(Date.now()));
 
@@ -242,7 +253,11 @@ saveButton.addEventListener("click", async () => {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ svgUrl: currentSvgUrl, visibleIds: currentRawVisibleIds }),
+      body: JSON.stringify({
+        svgUrl: currentSvgUrl,
+        renderSvgUrl: getRenderSvgUrl() || undefined,
+        visibleIds: currentRawVisibleIds,
+      }),
     });
 
     if (!response.ok) {

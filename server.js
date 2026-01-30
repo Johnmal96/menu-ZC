@@ -16,6 +16,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 const saveFolder = process.env.SAVED_SVG_FOLDER || path.join(__dirname, "saved-svg");
 const defaultSvgUrl = process.env.SVG_SOURCE_URL || "/assets/menu1.svg";
+const defaultRenderSvgUrl = process.env.SVG_RENDER_SOURCE_URL || defaultSvgUrl;
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json({ limit: "5mb" }));
@@ -39,6 +40,8 @@ app.get("/api/visibility", async (req, res) => {
 app.get("/api/preview-png", async (req, res) => {
   try {
     const svgUrl = String(req.query?.svgUrl || defaultSvgUrl).trim();
+    const renderSvgUrl = String(req.query?.renderSvgUrl || "").trim();
+    const effectiveSvgUrl = renderSvgUrl || svgUrl || defaultRenderSvgUrl;
     const visibleIdsRaw = String(req.query?.visibleIds || "").trim();
     const visibleIds = visibleIdsRaw
       ? visibleIdsRaw
@@ -47,7 +50,7 @@ app.get("/api/preview-png", async (req, res) => {
           .filter(Boolean)
       : [];
 
-    let svg = await readSvgFromAssets(svgUrl);
+    let svg = await readSvgFromAssets(effectiveSvgUrl);
     const prices = await fetchPricesFromSheet();
     svg = applyVisibilityAndPricesToSvg(svg, visibleIds, prices);
 
@@ -76,6 +79,7 @@ app.post("/api/save-svg", async (req, res) => {
     const wantsDownload = String(req.query?.download || "").trim() === "1";
     const svgPayload = req.body?.svg;
     const svgUrl = String(req.body?.svgUrl || "").trim();
+    const renderSvgUrl = String(req.body?.renderSvgUrl || "").trim();
     const visibleIds = Array.isArray(req.body?.visibleIds) ? req.body.visibleIds : [];
     const expandedVisibleIds = Array.isArray(req.body?.expandedVisibleIds) ? req.body.expandedVisibleIds : null;
 
@@ -87,7 +91,8 @@ app.post("/api/save-svg", async (req, res) => {
         return res.status(400).json({ error: "Invalid SVG payload." });
       }
     } else if (svgUrl) {
-      svg = await readSvgFromAssets(svgUrl);
+      const effectiveSvgUrl = renderSvgUrl || svgUrl || defaultRenderSvgUrl;
+      svg = await readSvgFromAssets(effectiveSvgUrl);
       const prices = await fetchPricesFromSheet();
 
       const effectiveVisibleIds = (expandedVisibleIds && expandedVisibleIds.length ? expandedVisibleIds : visibleIds)
