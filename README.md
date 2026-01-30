@@ -49,6 +49,24 @@ This approach avoids parsing huge SVG files on the `/api/visibility` endpoint (w
 ## Save image
 Click **Save Image** to send the current visible IDs to the backend. The server loads the SVG from the known URL, applies visibility server-side, renders it to PNG using resvg, and stores it in `SAVED_SVG_FOLDER` (default: `./saved-svg`) via `/api/save-svg`.
 
+## Save PNG to Google Drive (no user sign-in)
+The UI includes **Save to Google Drive**, which renders the PNG server-side and uploads it into a Drive folder using a **service account**.
+
+### Setup
+1) Create a Google Cloud **service account** and generate a JSON key.
+2) In Google Drive, share your target folder with the service account email (Editor permission).
+3) Set Render environment variables:
+
+- `GOOGLE_DRIVE_FOLDER_ID` (from the folder URL)
+- `GOOGLE_DRIVE_CLIENT_EMAIL` (service account email)
+- `GOOGLE_DRIVE_PRIVATE_KEY` (service account private key)
+- Optional: `GOOGLE_DRIVE_MAKE_PUBLIC=1` (default) to set "Anyone with the link" reader permissions on uploaded PNGs
+
+Private key note: if your platform stores newlines as `\n`, keep it that way; the server converts `\n` to real newlines automatically.
+
+### Endpoint
+- `POST /api/save-drive` with JSON body `{ svgUrl, renderSvgUrl?, visibleIds[] }` returns `{ fileId, webViewLink, webContentLink }`.
+
 ## Deploy to Render (Git LFS)
 If your SVGs are tracked with Git LFS, Render needs `git-lfs` installed to pull the real SVG files (otherwise it will only have small pointer files).
 
