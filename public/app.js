@@ -281,6 +281,32 @@ saveButton.addEventListener("click", async () => {
 
     const blob = await response.blob();
     const fileName = response.headers.get("X-File-Name") || "menu.png";
+
+    // iPad/iPhone: prefer the native Share Sheet so the user can AirDrop / Save to Photos / Save to Files.
+    // This is more reliable than the <a download> path on iOS Safari.
+    try {
+      const canShareFiles =
+        typeof navigator !== "undefined" &&
+        typeof navigator.share === "function" &&
+        typeof navigator.canShare === "function";
+
+      if (canShareFiles) {
+        const file = new File([blob], fileName, { type: "image/png" });
+        if (navigator.canShare({ files: [file] })) {
+          statusElement.textContent = "Opening share sheet...";
+          await navigator.share({
+            title: "Menu Image",
+            text: "Menu PNG",
+            files: [file],
+          });
+          statusElement.textContent = `Shared: ${fileName}`;
+          return;
+        }
+      }
+    } catch {
+      // If the share sheet fails/cancels, fall back to download.
+    }
+
     const url = URL.createObjectURL(blob);
 
     const link = document.createElement("a");
