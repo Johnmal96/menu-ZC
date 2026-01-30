@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { promises as fs } from "fs";
+import { Readable } from "stream";
 import dotenv from "dotenv";
 import { google } from "googleapis";
 import { load } from "cheerio";
@@ -74,34 +75,6 @@ app.get("/api/preview-png", async (req, res) => {
   }
 });
 
-app.get("/api/latest", async (req, res) => {
-  try {
-    const latest = await findLatestSavedPng();
-    if (!latest) {
-      return res.status(404).json({ error: "No images saved yet." });
-    }
-    res.json({ ok: true, fileName: latest.fileName, mtimeMs: latest.mtimeMs });
-  } catch (error) {
-    console.error("Failed to get latest image:", error);
-    res.status(500).json({ error: "Failed to get latest image." });
-  }
-});
-
-app.get("/api/latest-png", async (req, res) => {
-  try {
-    const latest = await findLatestSavedPng();
-    if (!latest) {
-      return res.status(404).json({ error: "No images saved yet." });
-    }
-    res.setHeader("Content-Type", "image/png");
-    res.setHeader("Cache-Control", "no-store");
-    return res.sendFile(latest.filePath);
-  } catch (error) {
-    console.error("Failed to send latest image:", error);
-    res.status(500).json({ error: "Failed to send latest image." });
-  }
-});
-
 app.post("/api/save-svg", async (req, res) => {
   try {
     const wantsDownload = String(req.query?.download || "").trim() === "1";
@@ -162,6 +135,47 @@ app.post("/api/save-svg", async (req, res) => {
   }
 });
 
+app.post("/api/save-drive", async (req, res) => {
+  try {
+    const svgUrl = String(req.body?.svgUrl || "").trim();
+    const renderSvgUrl = String(req.body?.renderSvgUrl || "").trim();
+    const visibleIds = Array.isArray(req.body?.visibleIds) ? req.body.visibleIds : [];
+    const expandedVisibleIds = Array.isArray(req.body?.expandedVisibleIds) ? req.body.expandedVisibleIds : null;
+
+    if (!svgUrl) {
+      return res.status(400).json({ error: "Missing svgUrl." });
+    }
+
+    const effectiveSvgUrl = renderSvgUrl || svgUrl || defaultRenderSvgUrl;
+    let svg = await readSvgFromAssets(effectiveSvgUrl);
+    const prices = await fetchPricesFromSheet();
+
+    const effectiveVisibleIds = (expandedVisibleIds && expandedVisibleIds.length ? expandedVisibleIds : visibleIds)
+      .map((id) => String(id || "").trim())
+      .filter(Boolean);
+
+    svg = applyVisibilityAndPricesToSvg(svg, effectiveVisibleIds, prices);
+
+    const resvg = new Resvg(svg, { background: "transparent" });
+    const pngBuffer = resvg.render().asPng();
+    const fileName = `menu-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+
+    const uploaded = await uploadPngToGoogleDrive({ fileName, pngBuffer });
+
+    res.json({ ok: true, ...uploaded });
+  } catch (error) {
+    console.error("Failed to save PNG to Drive:", error);
+    const message = String(error?.message || "Failed to save PNG to Drive.");
+    if (message.includes("SVG_TOO_LARGE")) {
+      return res.status(413).json({ error: message });
+    }
+    if (shouldExposeErrorMessage(message) || message.startsWith("DRIVE_")) {
+      return res.status(500).json({ error: message });
+    }
+    res.status(500).json({ error: "Failed to save PNG to Drive." });
+  }
+});
+
 // Ensure API callers always get JSON (prevents HTML 404 pages that break response.json()).
 app.use("/api", (req, res) => {
   res.status(404).json({ error: "Not found." });
@@ -181,30 +195,80 @@ function shouldExposeErrorMessage(message) {
   );
 }
 
-async function findLatestSavedPng() {
-  try {
-    const entries = await fs.readdir(saveFolder, { withFileTypes: true });
-    const pngNames = entries
-      .filter((entry) => entry.isFile())
-      .map((entry) => entry.name)
-      .filter((name) => name.toLowerCase().endsWith(".png"));
+let cachedDriveClient = null;
 
-    if (pngNames.length === 0) return null;
+function getDriveClient() {
+  if (cachedDriveClient) return cachedDriveClient;
 
-    let best = null;
-    for (const name of pngNames) {
-      const filePath = path.join(saveFolder, name);
-      const stat = await fs.stat(filePath);
-      const mtimeMs = Number(stat.mtimeMs || 0);
-      if (!best || mtimeMs > best.mtimeMs) {
-        best = { fileName: name, filePath, mtimeMs };
-      }
-    }
+  const clientEmail = String(process.env.GOOGLE_DRIVE_CLIENT_EMAIL || "").trim();
+  const privateKeyRaw = String(process.env.GOOGLE_DRIVE_PRIVATE_KEY || "");
+  const privateKey = privateKeyRaw.replace(/\\n/g, "\n").trim();
+  const folderId = String(process.env.GOOGLE_DRIVE_FOLDER_ID || "").trim();
 
-    return best;
-  } catch {
-    return null;
+  if (!clientEmail || !privateKey || !folderId) {
+    throw new Error(
+      "DRIVE_MISSING_CONFIG: Set GOOGLE_DRIVE_CLIENT_EMAIL, GOOGLE_DRIVE_PRIVATE_KEY, and GOOGLE_DRIVE_FOLDER_ID in your environment.",
+    );
   }
+
+  const auth = new google.auth.JWT({
+    email: clientEmail,
+    key: privateKey,
+    scopes: ["https://www.googleapis.com/auth/drive"],
+  });
+
+  cachedDriveClient = google.drive({ version: "v3", auth });
+  return cachedDriveClient;
+}
+
+async function uploadPngToGoogleDrive({ fileName, pngBuffer }) {
+  const drive = getDriveClient();
+  const folderId = String(process.env.GOOGLE_DRIVE_FOLDER_ID || "").trim();
+  const makePublic = String(process.env.GOOGLE_DRIVE_MAKE_PUBLIC || "1").trim() === "1";
+
+  const createResponse = await drive.files.create({
+    requestBody: {
+      name: fileName,
+      parents: [folderId],
+      mimeType: "image/png",
+    },
+    media: {
+      mimeType: "image/png",
+      body: Readable.from(pngBuffer),
+    },
+    fields: "id,name,webViewLink,webContentLink",
+    supportsAllDrives: true,
+  });
+
+  const fileId = String(createResponse.data?.id || "");
+  if (!fileId) {
+    throw new Error("DRIVE_UPLOAD_FAILED: No file id returned.");
+  }
+
+  if (makePublic) {
+    try {
+      await drive.permissions.create({
+        fileId,
+        requestBody: { role: "reader", type: "anyone" },
+        supportsAllDrives: true,
+      });
+    } catch (error) {
+      // Some Drive orgs disallow public sharing. Still return the file id/link we have.
+      console.warn("Failed to set public permission:", error?.message || error);
+    }
+  }
+
+  // Fetch links after permissions change (sometimes create doesn't populate them immediately).
+  const getResponse = await drive.files.get({
+    fileId,
+    fields: "id,name,webViewLink,webContentLink",
+    supportsAllDrives: true,
+  });
+
+  const webViewLink = String(getResponse.data?.webViewLink || createResponse.data?.webViewLink || "");
+  const webContentLink = String(getResponse.data?.webContentLink || createResponse.data?.webContentLink || "");
+
+  return { fileId, fileName: String(getResponse.data?.name || fileName), webViewLink, webContentLink };
 }
 
 async function readSvgFromAssets(svgUrl) {

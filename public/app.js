@@ -1,6 +1,7 @@
 const svgContainer = document.getElementById("svg-container");
 const refreshButton = document.getElementById("refresh-button");
 const saveButton = document.getElementById("save-button");
+const saveDriveButton = document.getElementById("save-drive-button");
 const menuSelect = document.getElementById("menu-select");
 const statusElement = document.getElementById("status");
 
@@ -322,6 +323,38 @@ saveButton.addEventListener("click", async () => {
   } catch (error) {
     console.error(error);
     statusElement.textContent = String(error?.message || "Failed to download PNG.");
+  }
+});
+
+saveDriveButton?.addEventListener("click", async () => {
+  try {
+    statusElement.textContent = "Uploading to Google Drive...";
+    const { response, data } = await fetchJson("/api/save-drive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        svgUrl: currentSvgUrl,
+        renderSvgUrl: getRenderSvgUrl() || undefined,
+        visibleIds: currentRawVisibleIds,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(data?.error || `Failed to upload to Drive (HTTP ${response.status}).`);
+    }
+
+    const link = String(data?.webViewLink || data?.webContentLink || "").trim();
+    if (link) {
+      statusElement.textContent = "Uploaded to Drive. Opening link...";
+      window.open(link, "_blank", "noopener");
+      return;
+    }
+
+    const fileId = String(data?.fileId || "").trim();
+    statusElement.textContent = fileId ? `Uploaded to Drive: ${fileId}` : "Uploaded to Drive.";
+  } catch (error) {
+    console.error(error);
+    statusElement.textContent = String(error?.message || "Failed to upload to Drive.");
   }
 });
 
