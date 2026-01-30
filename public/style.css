@@ -27,6 +27,18 @@ body {
   margin: 24px 0;
 }
 
+.controls__label {
+  font-weight: 600;
+}
+
+.controls__select {
+  background: #0b1220;
+  color: #f8fafc;
+  border: 1px solid #334155;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
 button {
   background: #38bdf8;
   color: #0f172a;

@@ -79,8 +79,8 @@ web_modules/
 .env.production.local
 .env.local
 
-# Oversized assets (keep out of git history)
-public/assets/menu1.svg
+## Oversized assets (keep out of git history)
+## (removed so menu SVGs can be versioned)
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

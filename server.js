@@ -15,6 +15,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = process.env.PORT || 3000;
 const saveFolder = process.env.SAVED_SVG_FOLDER || path.join(__dirname, "saved-svg");
+const defaultSvgUrl = process.env.SVG_SOURCE_URL || "/assets/menu1.svg";
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json({ limit: "5mb" }));
@@ -25,7 +26,11 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/visibility", async (req, res) => {
   try {
-    const [{ visibleIds, rawVisibleIds }, prices] = await Promise.all([fetchVisibleIdsFromSheet(), fetchPricesFromSheet()]);
+    const svgUrl = String(req.query?.svgUrl || defaultSvgUrl).trim();
+    const svg = await readSvgFromAssets(svgUrl);
+    const svgIdMap = buildSvgIdMapFromSvg(svg);
+
+    const [{ visibleIds, rawVisibleIds }, prices] = await Promise.all([fetchVisibleIdsFromSheet(svgIdMap), fetchPricesFromSheet()]);
     res.json({ visibleIds, rawVisibleIds, prices });
   } catch (error) {
     console.error("Failed to load visibility from sheet:", error);
@@ -35,6 +40,7 @@ app.get("/api/visibility", async (req, res) => {
 
 app.post("/api/save-svg", async (req, res) => {
   try {
+    const wantsDownload = String(req.query?.download || "").trim() === "1";
     const svgPayload = req.body?.svg;
     const svgUrl = String(req.body?.svgUrl || "").trim();
     const visibleIds = Array.isArray(req.body?.visibleIds) ? req.body.visibleIds : [];
@@ -47,20 +53,7 @@ app.post("/api/save-svg", async (req, res) => {
         return res.status(400).json({ error: "Invalid SVG payload." });
       }
     } else if (svgUrl) {
-      if (!svgUrl.startsWith("/assets/") || !svgUrl.toLowerCase().endsWith(".svg")) {
-        return res.status(400).json({ error: "Invalid SVG URL." });
-      }
-
-      const publicPath = path.join(__dirname, "public");
-      const relativePath = svgUrl.replace(/^\/+/, "");
-      const resolvedPath = path.join(publicPath, relativePath);
-      const assetsPath = path.join(publicPath, "assets");
-
-      if (!resolvedPath.startsWith(assetsPath)) {
-        return res.status(400).json({ error: "Invalid SVG URL." });
-      }
-
-      svg = await fs.readFile(resolvedPath, "utf8");
+      svg = await readSvgFromAssets(svgUrl);
 
       const svgIdMap = buildSvgIdMapFromSvg(svg);
       const expandedVisibleIds = visibleIds.flatMap((id) => {
@@ -86,6 +79,13 @@ app.post("/api/save-svg", async (req, res) => {
     const pngBuffer = resvg.render().asPng();
     await fs.writeFile(filePath, pngBuffer);
 
+    if (wantsDownload) {
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+      res.setHeader("X-File-Name", fileName);
+      return res.send(pngBuffer);
+    }
+
     res.json({ ok: true, fileName });
   } catch (error) {
     console.error("Failed to save SVG:", error);
@@ -97,11 +97,33 @@ app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });
 
-async function fetchVisibleIdsFromSheet() {
+async function readSvgFromAssets(svgUrl) {
+  const normalizedUrl = String(svgUrl || "").trim();
+  if (!normalizedUrl.startsWith("/assets/") || !normalizedUrl.toLowerCase().endsWith(".svg")) {
+    throw new Error("Invalid SVG URL.");
+  }
+
+  const publicPath = path.join(__dirname, "public");
+  const relativePath = normalizedUrl.replace(/^\/+/, "");
+  const resolvedPath = path.join(publicPath, relativePath);
+  const assetsPath = path.join(publicPath, "assets");
+
+  if (!resolvedPath.startsWith(assetsPath)) {
+    throw new Error("Invalid SVG URL.");
+  }
+
+  return fs.readFile(resolvedPath, "utf8");
+}
+
+async function fetchVisibleIdsFromSheet(svgIdMap) {
   const sheetId = process.env.GOOGLE_SHEETS_ID;
   const sheetName = process.env.GOOGLE_SHEETS_SHEET_NAME;
   const rawRange = process.env.GOOGLE_SHEETS_RANGE || "A3:B";
   const apiKey = process.env.GOOGLE_API_KEY;
+
+  if (!svgIdMap || typeof svgIdMap.get !== "function") {
+    throw new Error("Missing SVG id map.");
+  }
 
   if (!sheetId || !apiKey) {
     throw new Error("Missing GOOGLE_SHEETS_ID or GOOGLE_API_KEY.");
@@ -139,8 +161,6 @@ async function fetchVisibleIdsFromSheet() {
   });
 
   const rows = response.data.values || [];
-
-  const svgIdMap = await getSvgIdMap();
 
   const entries = rows
     .map((row, index) => {
@@ -226,13 +246,26 @@ async function fetchPricesFromSheet() {
 
   // rawRange starts at row 3 by default. Map row 3 => price1, row 4 => price2, ...
   rows.forEach((row, index) => {
-    const value = String(row?.[0] ?? "").trim();
+    const rawValue = String(row?.[0] ?? "").trim();
+    const value = formatZlotyPrice(rawValue);
     const priceIndex = index + 1;
     const key = `price${priceIndex}`;
     prices[key] = value;
   });
 
   return prices;
+}
+
+function formatZlotyPrice(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return "";
+
+  // If the sheet already contains the currency, keep it.
+  if (/\bz\s*ł\b/i.test(trimmed) || /\bzł\b/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  return `${trimmed} zł`;
 }
 
 function formatSheetName(name) {
@@ -363,37 +396,6 @@ function applyPricesToSvg(svg, prices) {
 function cssEscapeId(id) {
   // Minimal escaping for CSS id selectors (sufficient for ids like price1, price2, ...)
   return String(id).replace(/[^a-zA-Z0-9_-]/g, (match) => `\\${match}`);
-}
-
-async function getSvgIdMap() {
-  const svgUrl = process.env.SVG_SOURCE_URL || "/assets/menu1.svg";
-  const publicPath = path.join(__dirname, "public");
-  const relativePath = svgUrl.replace(/^\/+/, "");
-  const resolvedPath = path.join(publicPath, relativePath);
-  const assetsPath = path.join(publicPath, "assets");
-
-  if (!resolvedPath.startsWith(assetsPath)) {
-    throw new Error("SVG_SOURCE_URL must point to a file under /public/assets.");
-  }
-
-  const svg = await fs.readFile(resolvedPath, "utf8");
-  return buildSvgIdMapFromSvg(svg);
-
-  for (const [key, list] of map.entries()) {
-    list.sort((a, b) => {
-      const aParts = a.split(".").map(Number);
-      const bParts = b.split(".").map(Number);
-      const len = Math.max(aParts.length, bParts.length);
-      for (let i = 0; i < len; i += 1) {
-        const av = aParts[i] || 0;
-        const bv = bParts[i] || 0;
-        if (av !== bv) return av - bv;
-      }
-      return 0;
-    });
-  }
-
-  return map;
 }
 
 function buildSvgIdMapFromSvg(svg) {

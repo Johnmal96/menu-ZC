@@ -1,8 +1,25 @@
 const svgContainer = document.getElementById("svg-container");
 const refreshButton = document.getElementById("refresh-button");
 const saveButton = document.getElementById("save-button");
+const menuSelect = document.getElementById("menu-select");
 const statusElement = document.getElementById("status");
-const SVG_URL = "/assets/menu1.svg";
+
+const KNOWN_MENUS = ["menu1.svg", "menu2.svg"];
+
+function normalizeMenuFile(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "menu1.svg";
+  const file = trimmed.replace(/^\/+/, "").replace(/^assets\//i, "");
+  if (KNOWN_MENUS.includes(file)) return file;
+  return "menu1.svg";
+}
+
+function toSvgUrl(menuFile) {
+  return `/assets/${normalizeMenuFile(menuFile)}`;
+}
+
+let currentMenuFile = normalizeMenuFile(new URLSearchParams(window.location.search).get("svg"));
+let currentSvgUrl = toSvgUrl(currentMenuFile);
 
 let svgRoot = null;
 let currentVisibleIds = [];
@@ -10,7 +27,7 @@ let currentPrices = {};
 
 async function loadSvg() {
   statusElement.textContent = "Loading SVG...";
-  const response = await fetch(SVG_URL);
+  const response = await fetch(currentSvgUrl);
   const svgText = await response.text();
   svgContainer.innerHTML = svgText;
   svgRoot = svgContainer.querySelector("svg");
@@ -50,7 +67,7 @@ function isTargetId(value) {
 async function refreshVisibility() {
   try {
     statusElement.textContent = "Fetching visibility...";
-    const response = await fetch("/api/visibility");
+    const response = await fetch(`/api/visibility?svgUrl=${encodeURIComponent(currentSvgUrl)}`);
     const data = await response.json();
     const expanded = data.visibleIds || [];
     const raw = data.rawVisibleIds || [];
@@ -68,32 +85,70 @@ async function refreshVisibility() {
 }
 
 refreshButton.addEventListener("click", refreshVisibility);
+
+function setMenu(menuFile) {
+  currentMenuFile = normalizeMenuFile(menuFile);
+  currentSvgUrl = toSvgUrl(currentMenuFile);
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("svg", currentMenuFile);
+  window.history.replaceState({}, "", url);
+}
+
+menuSelect?.addEventListener("change", async (event) => {
+  const next = event.target?.value;
+  setMenu(next);
+  await loadSvg();
+  await refreshVisibility();
+});
 saveButton.addEventListener("click", async () => {
   if (!svgRoot) return;
 
   try {
-    statusElement.textContent = "Saving SVG...";
-    const response = await fetch("/api/save-svg", {
+    statusElement.textContent = "Preparing download...";
+    const response = await fetch("/api/save-svg?download=1", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ svgUrl: SVG_URL, visibleIds: currentVisibleIds }),
+      body: JSON.stringify({ svgUrl: currentSvgUrl, visibleIds: currentVisibleIds }),
     });
 
-    const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.error || "Failed to save SVG.");
+      let message = "Failed to save SVG.";
+      try {
+        const data = await response.json();
+        message = data?.error || message;
+      } catch {
+        // ignore
+      }
+      throw new Error(message);
     }
 
-    statusElement.textContent = `Saved: ${data.fileName}`;
+    const blob = await response.blob();
+    const fileName = response.headers.get("X-File-Name") || "menu.png";
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    URL.revokeObjectURL(url);
+    statusElement.textContent = `Downloaded: ${fileName}`;
   } catch (error) {
     console.error(error);
-    statusElement.textContent = "Failed to save SVG.";
+    statusElement.textContent = "Failed to download PNG.";
   }
 });
 
 (async () => {
+  if (menuSelect) {
+    menuSelect.value = currentMenuFile;
+  }
   await loadSvg();
   await refreshVisibility();
 })();
