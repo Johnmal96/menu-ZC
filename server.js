@@ -163,14 +163,18 @@ async function readSvgFromAssets(svgUrl) {
     throw new Error("Invalid SVG URL.");
   }
 
-  // Large SVGs (especially with embedded base64 images) can exceed V8's maximum string length
-  // and crash the process with an OOM. Guard and give a clear error instead.
+  // Large SVGs (especially with embedded base64 images) can crash small-memory hosts (Render free tier)
+  // and/or exceed V8 limits. Guard and give a clear error instead.
   const { size } = await fs.stat(resolvedPath);
   const sizeMb = Math.round(size / 1024 / 1024);
-  if (sizeMb >= 270) {
+  const maxSvgMbRaw = String(process.env.MAX_SVG_MB || "25").trim();
+  const maxSvgMb = Number(maxSvgMbRaw);
+  const effectiveLimitMb = Number.isFinite(maxSvgMb) && maxSvgMb > 0 ? maxSvgMb : 25;
+
+  if (sizeMb >= effectiveLimitMb) {
     throw new Error(
-      `SVG_TOO_LARGE: ${path.basename(resolvedPath)} is ${sizeMb}MB. ` +
-        "Optimize the SVG (remove embedded images/base64, use linked images, or export optimized SVG) so it is smaller before loading/saving.",
+      `SVG_TOO_LARGE: ${path.basename(resolvedPath)} is ${sizeMb}MB (limit ${effectiveLimitMb}MB). ` +
+        "This host doesn't have enough memory to process it. Optimize the SVG (remove embedded images/base64, simplify paths) or raise MAX_SVG_MB on a larger instance.",
     );
   }
 

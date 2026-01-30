@@ -33,6 +33,7 @@ const isIOS =
 
 const usePngPreview = isIOS;
 let previewImg = null;
+let previewObjectUrl = null;
 
 async function fetchJson(url, options) {
   const maxRetries = 4;
@@ -116,7 +117,7 @@ async function loadSvg() {
   statusElement.textContent = "SVG loaded";
 }
 
-function updatePreviewPng() {
+async function updatePreviewPng() {
   if (!usePngPreview) return;
   if (!previewImg) return;
 
@@ -125,7 +126,39 @@ function updatePreviewPng() {
   url.searchParams.set("svgUrl", currentSvgUrl);
   url.searchParams.set("visibleIds", ids.join(","));
   url.searchParams.set("t", String(Date.now()));
-  previewImg.src = url.toString();
+
+  try {
+    const response = await fetch(url.toString(), { headers: { Accept: "image/png" } });
+    if (!response.ok) {
+      const contentType = String(response.headers.get("content-type") || "");
+      const text = await response.text();
+
+      let message = `Preview failed (HTTP ${response.status}).`;
+      if (text) {
+        try {
+          message = String(JSON.parse(text)?.error || message);
+        } catch {
+          const snippet = text.replace(/\s+/g, " ").slice(0, 200);
+          message = `Preview failed (HTTP ${response.status}). Expected image/png but got ${contentType || "unknown"}. ` +
+            `Response starts with: ${snippet}`;
+        }
+      }
+
+      statusElement.textContent = message;
+      return;
+    }
+
+    const blob = await response.blob();
+    if (previewObjectUrl) {
+      URL.revokeObjectURL(previewObjectUrl);
+      previewObjectUrl = null;
+    }
+    previewObjectUrl = URL.createObjectURL(blob);
+    previewImg.src = previewObjectUrl;
+  } catch (error) {
+    console.error(error);
+    statusElement.textContent = String(error?.message || "Preview failed.");
+  }
 }
 
 function applyVisibility(visibleIds) {
@@ -174,7 +207,7 @@ async function refreshVisibility() {
     currentPrices = prices;
     applyVisibility(currentRawVisibleIds);
     applyPrices(currentPrices);
-    updatePreviewPng();
+    await updatePreviewPng();
     statusElement.textContent = `Visible IDs: ${currentRawVisibleIds.join(", ") || "none"}`;
   } catch (error) {
     console.error(error);
