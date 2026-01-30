@@ -6,7 +6,7 @@ This app loads an SVG file, pulls visible IDs from Google Sheets, and toggles th
 - Backend: [server.js](server.js)
 - Frontend: [public/index.html](public/index.html)
 - Client logic: [public/app.js](public/app.js)
-- Sample SVG: [public/assets/diagram.svg](public/assets/diagram.svg)
+- SVG assets: [public/assets/](public/assets/)
 - Environment template: [.env.example](.env.example)
 
 ## Google Sheets setup
@@ -42,7 +42,20 @@ Example:
 Update the `visible` column in Google Sheets to TRUE or FALSE, then click **Refresh visibility** in the UI. IDs like `#1` are normalized to `1` before matching SVG group IDs.
 
 ### Item number mapping
-If your sheet uses item numbers (`1`, `2`, `3`, ...), the server expands them to match SVG IDs with that prefix. Example: item `1` maps to `1.1`, `1.2`; item `2` maps to `2.1`, `2.2`; item `3` maps to `3.1`, `3.2`, `3.3`, `3.4`, etc. The SVG ID list is inferred from the SVG file configured in `SVG_SOURCE_URL`.
+If your sheet uses base item numbers (`1`, `2`, `3`, ...), the app treats them as “base IDs”. Any SVG element with an ID like `1.1`, `1.2`, etc is considered visible when base ID `1` is visible (same for `2.*`, `3.*`, ...). This is applied both in the browser preview and during PNG export.
+
+This approach avoids parsing huge SVG files on the `/api/visibility` endpoint (which can crash on low-memory hosts).
 
 ## Save image
 Click **Save Image** to send the current visible IDs to the backend. The server loads the SVG from the known URL, applies visibility server-side, renders it to PNG using resvg, and stores it in `SAVED_SVG_FOLDER` (default: `./saved-svg`) via `/api/save-svg`.
+
+## Deploy to Render (Git LFS)
+If your SVGs are tracked with Git LFS, Render needs `git-lfs` installed to pull the real SVG files (otherwise it will only have small pointer files).
+
+Recommended **Build Command**:
+
+`apt-get update; apt-get install -y git-lfs; git lfs install --local; git lfs pull; npm install`
+
+Then redeploy and verify:
+- `https://<your-app>.onrender.com/api/health` returns JSON
+- `https://<your-app>.onrender.com/assets/menu1.svg` is the real SVG (not a text pointer starting with `version https://git-lfs.github.com/spec/v1`)
