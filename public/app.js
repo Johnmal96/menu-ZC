@@ -35,25 +35,57 @@ const usePngPreview = isIOS;
 let previewImg = null;
 
 async function fetchJson(url, options) {
-  const response = await fetch(url, options);
-  const contentType = String(response.headers.get("content-type") || "");
-  const text = await response.text();
+  const maxRetries = 4;
+  const retryStatuses = new Set([502, 503, 504]);
 
-  let data = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      const snippet = text.replace(/\s+/g, " ").slice(0, 200);
-      throw new Error(
-        `Expected JSON but got ${contentType || "unknown content-type"} (HTTP ${response.status}). ` +
-          `This usually means the backend isn't being used (opened as a file / GitHub Pages) or the API route is missing. ` +
-          `Response starts with: ${snippet}`,
-      );
-    }
+  async function sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  return { response, data };
+  let lastResponse = null;
+  let lastText = "";
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const response = await fetch(url, options);
+    const contentType = String(response.headers.get("content-type") || "");
+    const text = await response.text();
+
+    lastResponse = response;
+    lastText = text;
+
+    // Render free instances can return a temporary 502/503 while waking up.
+    if (retryStatuses.has(response.status) && attempt < maxRetries) {
+      const delayMs = 500 * Math.pow(2, attempt);
+      statusElement.textContent = `Waking server… retrying (${attempt + 1}/${maxRetries})`;
+      await sleep(delayMs);
+      continue;
+    }
+
+    let data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        const snippet = text.replace(/\s+/g, " ").slice(0, 200);
+        if (response.status === 502 && /<title>\s*502\s*<\/title>/i.test(text)) {
+          throw new Error(
+            `Render returned HTTP 502 (HTML). This usually means the service is starting/sleeping or crashed. ` +
+              `Wait ~20 seconds and refresh, then try again. Response starts with: ${snippet}`,
+          );
+        }
+        throw new Error(
+          `Expected JSON but got ${contentType || "unknown content-type"} (HTTP ${response.status}). ` +
+            `This usually means the backend isn't being used (opened as a file / GitHub Pages) or the API route is missing. ` +
+            `Response starts with: ${snippet}`,
+        );
+      }
+    }
+
+    return { response, data };
+  }
+
+  // Shouldn't be reachable, but keep a safe fallback.
+  return { response: lastResponse, data: lastText ? null : null };
 }
 
 async function loadSvg() {
