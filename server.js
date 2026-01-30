@@ -74,6 +74,34 @@ app.get("/api/preview-png", async (req, res) => {
   }
 });
 
+app.get("/api/latest", async (req, res) => {
+  try {
+    const latest = await findLatestSavedPng();
+    if (!latest) {
+      return res.status(404).json({ error: "No images saved yet." });
+    }
+    res.json({ ok: true, fileName: latest.fileName, mtimeMs: latest.mtimeMs });
+  } catch (error) {
+    console.error("Failed to get latest image:", error);
+    res.status(500).json({ error: "Failed to get latest image." });
+  }
+});
+
+app.get("/api/latest-png", async (req, res) => {
+  try {
+    const latest = await findLatestSavedPng();
+    if (!latest) {
+      return res.status(404).json({ error: "No images saved yet." });
+    }
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "no-store");
+    return res.sendFile(latest.filePath);
+  } catch (error) {
+    console.error("Failed to send latest image:", error);
+    res.status(500).json({ error: "Failed to send latest image." });
+  }
+});
+
 app.post("/api/save-svg", async (req, res) => {
   try {
     const wantsDownload = String(req.query?.download || "").trim() === "1";
@@ -151,6 +179,32 @@ function shouldExposeErrorMessage(message) {
     text.includes("Missing GOOGLE_") ||
     text.includes("No sheet tabs")
   );
+}
+
+async function findLatestSavedPng() {
+  try {
+    const entries = await fs.readdir(saveFolder, { withFileTypes: true });
+    const pngNames = entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .filter((name) => name.toLowerCase().endsWith(".png"));
+
+    if (pngNames.length === 0) return null;
+
+    let best = null;
+    for (const name of pngNames) {
+      const filePath = path.join(saveFolder, name);
+      const stat = await fs.stat(filePath);
+      const mtimeMs = Number(stat.mtimeMs || 0);
+      if (!best || mtimeMs > best.mtimeMs) {
+        best = { fileName: name, filePath, mtimeMs };
+      }
+    }
+
+    return best;
+  } catch {
+    return null;
+  }
 }
 
 async function readSvgFromAssets(svgUrl) {
