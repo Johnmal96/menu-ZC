@@ -26,18 +26,12 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/visibility", async (req, res) => {
   try {
-    const svgUrl = String(req.query?.svgUrl || defaultSvgUrl).trim();
-    const svg = await readSvgFromAssets(svgUrl);
-    const svgIdMap = buildSvgIdMapFromSvg(svg);
-
-    const [{ visibleIds, rawVisibleIds }, prices] = await Promise.all([fetchVisibleIdsFromSheet(svgIdMap), fetchPricesFromSheet()]);
-    res.json({ visibleIds, rawVisibleIds, prices });
+    // IMPORTANT: do not read/parse the SVG here. Large SVGs can crash the process.
+    // The browser already has the SVG DOM and can expand base IDs (e.g. "1" -> "1.1", "1.2", ...).
+    const [{ rawVisibleIds }, prices] = await Promise.all([fetchVisibleIdsFromSheet(), fetchPricesFromSheet()]);
+    res.json({ rawVisibleIds, prices });
   } catch (error) {
     console.error("Failed to load visibility from sheet:", error);
-    const message = String(error?.message || "Failed to load visibility.");
-    if (message.includes("SVG_TOO_LARGE")) {
-      return res.status(413).json({ error: message });
-    }
     res.status(500).json({ error: "Failed to load visibility." });
   }
 });
@@ -48,6 +42,7 @@ app.post("/api/save-svg", async (req, res) => {
     const svgPayload = req.body?.svg;
     const svgUrl = String(req.body?.svgUrl || "").trim();
     const visibleIds = Array.isArray(req.body?.visibleIds) ? req.body.visibleIds : [];
+    const expandedVisibleIds = Array.isArray(req.body?.expandedVisibleIds) ? req.body.expandedVisibleIds : null;
 
     let svg = "";
 
@@ -58,18 +53,13 @@ app.post("/api/save-svg", async (req, res) => {
       }
     } else if (svgUrl) {
       svg = await readSvgFromAssets(svgUrl);
-
-      const svgIdMap = buildSvgIdMapFromSvg(svg);
-      const expandedVisibleIds = visibleIds.flatMap((id) => {
-        const normalized = String(id || "").trim();
-        if (!normalized) return [];
-        if (svgIdMap.has(normalized)) return svgIdMap.get(normalized);
-        return [normalized];
-      });
-
       const prices = await fetchPricesFromSheet();
-      svg = applyVisibilityToSvg(svg, expandedVisibleIds);
-      svg = applyPricesToSvg(svg, prices);
+
+      const effectiveVisibleIds = (expandedVisibleIds && expandedVisibleIds.length ? expandedVisibleIds : visibleIds)
+        .map((id) => String(id || "").trim())
+        .filter(Boolean);
+
+      svg = applyVisibilityAndPricesToSvg(svg, effectiveVisibleIds, prices);
     } else {
       return res.status(400).json({ error: "Missing SVG payload." });
     }
@@ -152,9 +142,7 @@ async function fetchVisibleIdsFromSheet(svgIdMap) {
   const rawRange = process.env.GOOGLE_SHEETS_RANGE || "A3:B";
   const apiKey = process.env.GOOGLE_API_KEY;
 
-  if (!svgIdMap || typeof svgIdMap.get !== "function") {
-    throw new Error("Missing SVG id map.");
-  }
+  // svgIdMap is optional now. /api/visibility returns raw IDs only.
 
   if (!sheetId || !apiKey) {
     throw new Error("Missing GOOGLE_SHEETS_ID or GOOGLE_API_KEY.");
@@ -224,9 +212,7 @@ async function fetchVisibleIdsFromSheet(svgIdMap) {
     .map((row) => row.id)
     .filter((id) => String(id || "").trim());
 
-  const visibleIds = entries
-    .filter((row) => row.ids.length)
-    .flatMap((row) => row.ids);
+  const visibleIds = entries.filter((row) => row.ids.length).flatMap((row) => row.ids);
 
   return { visibleIds, rawVisibleIds };
 }
